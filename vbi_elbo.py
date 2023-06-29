@@ -233,13 +233,19 @@ class MCElboMF(torch.nn.Module):
         
     def cs_theory_bsc_in_C(self, inputs, params):
         """
-        # inputs are teta_cs
         This method utilizes the existence of a bound state and also the asymptotic normalization coefficients
         to compute the theoretical cross section at the energies and angles where we have data.
 
         NOTE: C1+/- is really (C1+/-)^2 since we are sampling C1 squared
         
+        Arguments:
+        ----------
         
+        inputs: torch.tensor
+        Tensor of theta_cs values
+        
+        params: torch.tensor
+        Tensor combined calibration parameters and normalizing factors [parameters, factors]  
         """
         # Extract the parameters from params
         A0, r0, C1plus, P1plus, C1minus, P1minus = params # this is first time we get params
@@ -304,6 +310,19 @@ class MCElboMF(torch.nn.Module):
     
     def chi_squared(self, theory, expt, norm):
         """
+         Computes chi-square value. This is an intermediate computatin for log_likelihood
+        
+        Arguments:
+        ----------
+        
+        theory: torch.tensor
+        Tensor of theoretical vales of an observable
+        
+        expt: torch.tensor
+        Tensor of experimental observations
+        
+        norm: torch.tensor
+        Tensor of normalizign factors
         """
         #print(norm.shape, theory.shape, expt.shape)
         r = norm * theory - expt
@@ -312,10 +331,17 @@ class MCElboMF(torch.nn.Module):
     
     def log_likelihood(self, inputs, exp):
         """
-        Determines the likelihood of a set of parameters given the data.
+        Evaluates the log_likelihood for a given set of experimental inputs and experimental observations.
+        
+        Arguments:
+        ----------
+        
+        inputs: torch.tensor
+        Tensor of theta_cs values
+        
+        exp: torch.tensor
+        Tensor of experimental observations
         """
-        # Cast the parameters to an array
-        #parameters = torch.tensor([2,2,3,4,5,6] + [1] * self.f_dim) # this will be changed to self.params
         parameters = self.params[0]
 
         # Unpack the erps and normalization parameters
@@ -331,9 +357,7 @@ class MCElboMF(torch.nn.Module):
             norm_som = torch.tensor([])
             for l_int in self.l_som:
                 norms = torch.cat([params_f[j].repeat(l_int[j]) for j in range(0, l_int.shape[0])])
-                #norm_som.append(norms)
                 norm_som = torch.cat([norm_som, norms])
-            #norm_som = torch.cat(norm_som)
         if self.which_data == 'both':
             norm_barnard = params_f[-1].repeat( len(self.barnard_Elab))
             norm_som = torch.tensor([])
@@ -341,13 +365,10 @@ class MCElboMF(torch.nn.Module):
                 norms = torch.cat([params_f[j].repeat( l_int[j]) for j in range(0, l_int.shape[0])])
                 #print(norms)
                 norm_som = torch.cat([norm_som, norms])
-            #norm_som = torch.cat(norm_som)
 
         # Set the normalizations, theory values, and the exp values
         norm = torch.cat([norm_som, norm_barnard])
         theory = self.cs_theory_bsc_in_C(inputs,  params)
-        #theory = self.cs_theory(params)
-        #experiment = self.cs_data
         experiment = exp
 
         # Compute the chi squared
@@ -359,7 +380,10 @@ class MCElboMF(torch.nn.Module):
     
     def log_Normal(self, param, m, s):
         """Computes log likelihood of normal density
-        Args:
+        
+        Arguments:
+        ----------
+        
             param: 1 X K dimensional tensor
             m: 1 X K dimensional mean tensor
             s: 1 X K dimensional std tensor
@@ -369,7 +393,7 @@ class MCElboMF(torch.nn.Module):
         return log_prob.reshape(1,1)
         
     def q_log(self):
-        """Variational family log likelihood. Gaussian."""
+        """Variational family log likelihood. Gaussian fully factorized."""
         log_lkl = self.log_Normal(self.params, self.q_theta_m, self.softplus(self.q_theta_s))  
         return log_lkl
         
@@ -379,24 +403,44 @@ class MCElboMF(torch.nn.Module):
         return log_lkl
     
     def generate_sample(self, n_var = 2):
-        """Used for sampling from a variational family"""
+        """
+        Generate self.nMC from a standard multivariate normal distributino
+        
+        Arguments:
+        ----------
+        
+        n_var: int
+        Number of dimensions      
+        """
         return Normal(0,1).sample((self.nMC,n_var,1))
     
     def sample_reparam_normal(self, param, m, s):
-        """Reparametrization trick"""
+        """
+        Reparametrization trick.
+        
+        Arguments:
+        ----------
+        
+            param: 1 X K dimensional tensor
+            m: 1 X K dimensional mean tensor
+            s: 1 X K dimensional std tensor
+        
+        """
         return param.mul(self.softplus(s.T)).add(m.T)
     
-    #def data_likelihood(self, x, y):
-    #    """Returns data gaussian likelihood for one MC sample. Precision parametrization
-    #    
-    #        x: inputs (assumed to be n x x_dim tensor)
-    #        y: experimental observations (assumed to be a row tensor of size n)
-    #    """
-    #    y_fit = y  #This is a placeholder, y_fit is the model fit 
-    #    log_likelihood = (torch.log(self.precision) - np.log(2 * np.pi)) * 0.5 * self.n  - 0.5 * self.precision * torch.sum(torch.pow(y-y_fit, 2))    
-    #    return log_likelihood
-    
-    def compute_elbo_loop(self, x, y):     
+    def compute_elbo_loop(self, x, y):
+        """
+        Computes MC ELBO estimate based on the log_likelihood, q_log, and pri_log methods. 
+        
+        Arguments:
+        ----------
+        
+        x: torch_tensor
+        Tensor of theta_cs values
+        
+        y: torch_tensor
+        Tensor of experimental observations
+        """
         
         z = self.generate_sample(n_var = self.param_dim + self.f_dim)
         theta = self.sample_reparam_normal(z, self.q_theta_m, self.q_theta_s)
@@ -423,13 +467,48 @@ class MCElboFG(torch.nn.Module):
     def __init__(self, nMC, x_dim, param_dim, f_dim, err_cs, Elab_cs, f_sigmas,
                  recompute_values = True, which_data = "both", barnard_Elab = None, l_som = None):
         """ MCElbo is a child of torch.nn.Module class that implements the model likelihood and forward function for the VI
-            approximation
+            approximation with gaussian variational family (full covariance).
             
-            nMc: Number of samples for MC approximation of ELBO (typically 5 - 10)
-            x_dim: Dimension of known experimental inputs (for example Z and N)
-            param_dim: Dimension of calibration parameters
-            n: Sample size (this is a bit unnecesarily, but it skips one step in ELBO approximation)
+            Arguments:
+            ----------
+            
+            nMc: int
+            Number of samples for MC approximation of ELBO (typically 5 - 10)
+            
+            x_dim: int
+            Dimension of known experimental inputs (for example Z and N) - current implementation does not make any use of this information
+            
+            param_dim: int
+            Dimension of calibration parameters
+            
+            f_dim: int 
+            Dimension of the normalizing factors
+            
+            err_cs: numpy.array
+            Array of experimental uncertainties 
+            
+            Elab_cs: numpy.array
+            Array of Elab data producted by the DataLoader from scattering_data.py
+            
+            f_sigmas: numpy.array
+            Array of prior standard deviations for the normalizing factors
+            
+            recompute_values: bool
+            Intermediate computations to be carried again?
+            
+            which_data: string
+            Determines which data to look at
+            
+            barnard_Elab: numpy.array
+            Array of barnard_Elab data producted by the DataLoader from scattering_data.py. Only if which_data is "both" or "barnard"
+            
+            l_som: numpy.array
+            Array of l_som data producted by the DataLoader from scattering_data
         """
+        
+        ##############################################################################
+                    # Set the initial constants and useful variables
+        ##############################################################################
         super(MCElboFG, self).__init__()
         self.l_som = l_som
         self.barnard_Elab = barnard_Elab
@@ -618,11 +697,19 @@ class MCElboFG(torch.nn.Module):
         
     def cs_theory_bsc_in_C(self, inputs, params):
         """
-        # inputs are teta_cs
         This method utilizes the existence of a bound state and also the asymptotic normalization coefficients
         to compute the theoretical cross section at the energies and angles where we have data.
 
         NOTE: C1+/- is really (C1+/-)^2 since we are sampling C1 squared
+        
+        Arguments:
+        ----------
+        
+        inputs: torch.tensor
+        Tensor of theta_cs values
+        
+        params: torch.tensor
+        Tensor combined calibration parameters and normalizing factors [parameters, factors]  
         """
         # Extract the parameters from params
         A0, r0, C1plus, P1plus, C1minus, P1minus = params # this is first time we get params
@@ -686,6 +773,9 @@ class MCElboFG(torch.nn.Module):
         return sigma_ratio    
     
     def cholesky_factor(self):
+        """
+        Computes Cholesky factor (lower triangular matrix) of a covariance function for gaussian variational family
+        """
         U = torch.zeros((self.param_dim + self.f_dim ,self.param_dim + self.f_dim), dtype=torch.float64)
         U[self.up_i] = self.q_theta_c
         U[self.diag_i] = self.softplus(self.q_theta_s)
@@ -693,6 +783,19 @@ class MCElboFG(torch.nn.Module):
     
     def chi_squared(self, theory, expt, norm):
         """
+         Computes chi-square value. This is an intermediate computatin for log_likelihood
+        
+        Arguments:
+        ----------
+        
+        theory: torch.tensor
+        Tensor of theoretical vales of an observable
+        
+        expt: torch.tensor
+        Tensor of experimental observations
+        
+        norm: torch.tensor
+        Tensor of normalizign factors
         """
         #print(norm.shape, theory.shape, expt.shape)
         r = norm * theory - expt
@@ -701,10 +804,18 @@ class MCElboFG(torch.nn.Module):
     
     def log_likelihood(self, inputs, exp):
         """
-        Determines the likelihood of a set of parameters given the data.
+        Evaluates the log_likelihood for a given set of experimental inputs and experimental observations.
+        
+        Arguments:
+        ----------
+        
+        inputs: torch.tensor
+        Tensor of theta_cs values
+        
+        exp: torch.tensor
+        Tensor of experimental observations
         """
         # Cast the parameters to an array
-        #parameters = torch.tensor([2,2,3,4,5,6] + [1] * self.f_dim) # this will be changed to self.params
         parameters = self.params[0]
 
         # Unpack the erps and normalization parameters
@@ -720,23 +831,17 @@ class MCElboFG(torch.nn.Module):
             norm_som = torch.tensor([])
             for l_int in self.l_som:
                 norms = torch.cat([params_f[j].repeat(l_int[j]) for j in range(0, l_int.shape[0])])
-                #norm_som.append(norms)
                 norm_som = torch.cat([norm_som, norms])
-            #norm_som = torch.cat(norm_som)
         if self.which_data == 'both':
             norm_barnard = params_f[-1].repeat( len(self.barnard_Elab))
             norm_som = torch.tensor([])
             for l_int in self.l_som:
                 norms = torch.cat([params_f[j].repeat( l_int[j]) for j in range(0, l_int.shape[0])])
-                #print(norms)
                 norm_som = torch.cat([norm_som, norms])
-            #norm_som = torch.cat(norm_som)
 
         # Set the normalizations, theory values, and the exp values
         norm = torch.cat([norm_som, norm_barnard])
         theory = self.cs_theory_bsc_in_C(inputs,  params)
-        #theory = self.cs_theory(params)
-        #experiment = self.cs_data
         experiment = exp
 
         # Compute the chi squared
@@ -748,7 +853,10 @@ class MCElboFG(torch.nn.Module):
     
     def log_Normal(self, param, m, s):
         """Computes log likelihood of normal density
-        Args:
+        
+        Arguments:
+        ----------
+        
             param: 1 X K dimensional tensor
             m: 1 X K dimensional mean tensor
             s: 1 X K dimensional std tensor
@@ -758,7 +866,16 @@ class MCElboFG(torch.nn.Module):
         return log_prob.reshape(1,1)
         
     def q_log(self, L):
-        """Variational family log likelihood. Gaussian."""
+        """
+        Variational family log likelihood. Gaussian with full covariance matrix
+        
+        Arguments:
+        ----------
+        
+        L: torch.tensor
+        Cholesky factor for scale_tril imput to torche's MultivariateNormal
+        
+        """
         log_lkl = torch.distributions.multivariate_normal.MultivariateNormal(self.q_theta_m.flatten(), scale_tril=L).log_prob(self.params.flatten())
         return log_lkl  
         
@@ -768,24 +885,44 @@ class MCElboFG(torch.nn.Module):
         return log_lkl
     
     def generate_sample(self, n_var = 2):
-        """Used for sampling from a variational family"""
+        """
+        Generate self.nMC from a standard multivariate normal distributino
+        
+        Arguments:
+        ----------
+        
+        n_var: int
+        Number of dimensions      
+        """
         return Normal(0,1).sample((self.nMC,n_var,1)).to(dtype = torch.float64)
     
     def sample_reparam_normal(self, param, m, L):
-        """Reparametrization trick"""
+                """
+        Reparametrization trick.
+        
+        Arguments:
+        ----------
+        
+            param: 1 X K dimensional tensor
+            m: 1 X K dimensional mean tensor
+            L: K X K dimensional tensor, Cholesky factor, lower triangular
+        
+        """
         return L @ param + m.T
     
-    #def data_likelihood(self, x, y):
-    #    """Returns data gaussian likelihood for one MC sample. Precision parametrization
-    #    
-    #        x: inputs (assumed to be n x x_dim tensor)
-    #        y: experimental observations (assumed to be a row tensor of size n)
-    #    """
-    #    y_fit = y  #This is a placeholder, y_fit is the model fit 
-    #    log_likelihood = (torch.log(self.precision) - np.log(2 * np.pi)) * 0.5 * self.n  - 0.5 * self.precision * torch.sum(torch.pow(y-y_fit, 2))    
-    #    return log_likelihood
-    
     def compute_elbo_loop(self, x, y):
+                """
+        Computes MC ELBO estimate based on the log_likelihood, q_log, and pri_log methods. 
+        
+        Arguments:
+        ----------
+        
+        x: torch_tensor
+        Tensor of theta_cs values
+        
+        y: torch_tensor
+        Tensor of experimental observations
+        """
         
         L = self.cholesky_factor()
         z = self.generate_sample(n_var = self.param_dim + self.f_dim)
@@ -808,6 +945,16 @@ class MCElboFG(torch.nn.Module):
         return f"theta mean: {self.q_theta_m} \n theta std {self.softplus(self.q_theta_s)}"
 
 def correlation_from_covariance(covariance):
+    """
+    Computes correlation matrix from a covariance matrix
+    
+    Arguments:
+    ----------
+    
+    covariance: numpy:array
+    Covariance matrix
+    """
+    
     v = np.sqrt(np.diag(covariance))
     outer_v = np.outer(v, v)
     correlation = covariance / outer_v
