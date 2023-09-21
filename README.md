@@ -1,4 +1,4 @@
-# OU23
+# Bayesian uncertainty quantification with Pytorch (estimation of 3.He-alpha scattering parameters)
 
 Bayesian estimation of 3.He-alpha scattering parameters (PyTorch implementation). Both the mean-field approximation and the linear normalizing flow approximation are implemented.
 
